@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>macOS Compliance Dashboard - Demo</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Inter',-apple-system,sans-serif;background:#0f0f1a;min-height:100vh;color:#fff}
+.nav-tabs{display:flex;background:#1a1a2e;border-bottom:1px solid rgba(255,255,255,0.1);padding:0 30px;position:sticky;top:0;z-index:100}
+.nav-tab{padding:18px 28px;font-size:14px;font-weight:500;color:rgba(255,255,255,0.5);cursor:pointer;border-bottom:2px solid transparent}
+.nav-tab:hover{color:rgba(255,255,255,0.8)}.nav-tab.active{color:#fff;border-bottom-color:#10B981}
+.tab-content{display:none;padding:30px}.tab-content.active{display:block}
+.dashboard{max-width:1600px;margin:0 auto}
+.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:30px}
+.header h1{font-size:24px;font-weight:600}.header-meta{color:rgba(255,255,255,0.5);font-size:13px}
+.card{background:linear-gradient(145deg,#1e1e32,#1a1a2e);border-radius:20px;padding:28px;border:1px solid rgba(255,255,255,0.06)}
+.card-title{font-size:12px;font-weight:600;color:rgba(255,255,255,0.4);text-transform:uppercase;letter-spacing:1px;margin-bottom:20px}
+.main-grid{display:grid;grid-template-columns:420px 1fr;gap:25px}
+.left-column,.right-column{display:flex;flex-direction:column;gap:25px}
+.gauge-card{text-align:center;padding:30px 20px}
+.radial-gauge{position:relative;width:320px;height:220px;margin:0 auto}
+.radial-gauge svg.gauge-svg{width:320px;height:180px;overflow:visible}
+.gauge-center-text{position:absolute;top:95px;left:50%;transform:translateX(-50%);text-align:center}
+.gauge-percent{font-size:48px;font-weight:700;line-height:1}
+.gauge-percent.excellent{color:#10B981}
+.gauge-percent.good{color:#84CC16}
+.gauge-percent.fair{color:#EAB308}
+.gauge-percent.poor{color:#F97316}
+.gauge-percent.critical{color:#EF4444}
+.gauge-sublabel{font-size:13px;color:rgba(255,255,255,0.5);margin-top:4px}
+.radial-icon{position:absolute;display:flex;flex-direction:column;align-items:center;gap:4px}
+.radial-icon .icon-circle{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;border:3px solid;background:rgba(15,15,26,0.95)}
+.radial-icon .icon-label{font-size:8px;color:rgba(255,255,255,0.5);text-transform:uppercase;letter-spacing:0.5px;font-weight:600}
+.radial-icon.pos1{left:5px;bottom:15px}
+.radial-icon.pos2{left:25px;top:55px}
+.radial-icon.pos3{left:50%;top:0px;transform:translateX(-50%)}
+.radial-icon.pos4{right:25px;top:55px}
+.radial-icon.pos5{right:5px;bottom:15px}
+.radial-icon .icon-circle.red{border-color:#EF4444;color:#EF4444}
+.radial-icon .icon-circle.orange{border-color:#F97316;color:#F97316}
+.radial-icon .icon-circle.yellow{border-color:#EAB308;color:#EAB308}
+.radial-icon .icon-circle.lime{border-color:#84CC16;color:#84CC16}
+.radial-icon .icon-circle.green{border-color:#10B981;color:#10B981}
+.stats-row{display:flex;gap:12px;margin-top:20px}
+.stat-box{flex:1;background:rgba(255,255,255,0.03);border-radius:14px;padding:16px 12px;text-align:center;border:1px solid rgba(255,255,255,0.05)}
+.stat-box .value{font-size:32px;font-weight:700}
+.stat-box .label{font-size:10px;color:rgba(255,255,255,0.5);margin-top:2px;text-transform:uppercase;letter-spacing:0.5px}
+.stat-box .comparison{margin-top:10px;display:flex;align-items:center;justify-content:center;gap:6px}
+.stat-box .prev-val{font-size:11px;color:rgba(255,255,255,0.35)}
+.stat-box .delta{font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px}
+.stat-box .delta.up{background:rgba(16,185,129,0.2);color:#10B981}
+.stat-box .delta.down{background:rgba(239,68,68,0.2);color:#EF4444}
+.stat-box .delta.neutral{background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.4)}
+.stat-box.green .value{color:#10B981}.stat-box.red .value{color:#EF4444}.stat-box.blue .value{color:#3B82F6}
+.header-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:25px}
+.prev-banner{background:linear-gradient(135deg,rgba(59,130,246,0.12),rgba(139,92,246,0.08));border:1px solid rgba(59,130,246,0.2);border-radius:14px;padding:14px 20px;margin-bottom:25px;display:flex;align-items:center;gap:14px}
+.prev-banner .icon{font-size:22px}
+.prev-banner .text{color:rgba(255,255,255,0.8);font-size:14px;flex:1}
+.prev-banner .date{color:#60A5FA;font-weight:600}
+.pct-badge{font-size:13px;padding:8px 14px;border-radius:10px;font-weight:600}
+.pct-badge.up{background:rgba(16,185,129,0.2);color:#10B981}
+.pct-badge.down{background:rgba(239,68,68,0.2);color:#EF4444}
+.pct-badge.neutral{background:rgba(255,255,255,0.1);color:rgba(255,255,255,0.5)}
+.version-item{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid rgba(255,255,255,0.05)}
+.version-item:last-child{border-bottom:none}.version-info{flex:1}
+.version-name{font-size:14px;font-weight:500;color:rgba(255,255,255,0.9)}.version-count{font-size:12px;color:rgba(255,255,255,0.4)}
+.version-bar-wrapper{width:120px;display:flex;align-items:center;gap:8px}
+.version-bar{flex:1;height:8px;background:rgba(255,255,255,0.1);border-radius:4px;overflow:hidden}
+.version-bar-fill{height:100%;border-radius:4px}.version-bar-fill.green{background:linear-gradient(90deg,#10B981,#34D399)}.version-bar-fill.red{background:linear-gradient(90deg,#EF4444,#F87171)}
+.version-pct{font-size:12px;color:rgba(255,255,255,0.5);min-width:40px;text-align:right}
+.version-list{max-height:320px;overflow-y:auto}.version-list::-webkit-scrollbar{width:4px}.version-list::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.1);border-radius:2px}
+.charts-row{display:grid;grid-template-columns:1fr 1fr;gap:25px}.chart-container{height:280px}
+.req-item{display:flex;align-items:center;gap:12px;padding:14px;background:rgba(255,255,255,0.03);border-radius:10px;margin-bottom:10px}
+.req-item:last-child{margin-bottom:0}.req-icon{width:36px;height:36px;border-radius:10px;background:rgba(16,185,129,0.15);display:flex;align-items:center;justify-content:center;font-size:18px}
+.req-text{font-size:14px;color:rgba(255,255,255,0.8)}.req-text span{display:block;font-size:11px;color:rgba(255,255,255,0.4);margin-top:2px}
+.table-controls{display:flex;gap:15px;margin-bottom:20px;flex-wrap:wrap}
+.search-box{flex:1;min-width:250px;position:relative}
+.search-box input{width:100%;padding:12px 16px 12px 44px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;color:#fff;font-size:14px;outline:none}
+.search-box input:focus{border-color:#10B981}.search-box input::placeholder{color:rgba(255,255,255,0.3)}
+.search-box::before{content:'🔍';position:absolute;left:16px;top:50%;transform:translateY(-50%);font-size:14px;opacity:0.5}
+.filter-btn{padding:12px 20px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;color:rgba(255,255,255,0.7);font-size:13px;cursor:pointer}
+.filter-btn:hover{background:rgba(255,255,255,0.1)}.filter-btn.active{background:#10B981;border-color:#10B981;color:#fff}.filter-btn.active.red{background:#EF4444;border-color:#EF4444}
+.data-table{width:100%;border-collapse:collapse}
+.data-table th{text-align:left;padding:14px 16px;font-size:11px;font-weight:600;color:rgba(255,255,255,0.4);text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid rgba(255,255,255,0.1);background:rgba(0,0,0,0.2);position:sticky;top:0;cursor:pointer}
+.data-table th:hover{color:rgba(255,255,255,0.7)}
+.data-table td{padding:14px 16px;font-size:13px;border-bottom:1px solid rgba(255,255,255,0.05);color:rgba(255,255,255,0.8)}
+.data-table tr:hover td{background:rgba(255,255,255,0.02)}
+.status-badge{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:500}
+.status-badge.compliant{background:rgba(16,185,129,0.15);color:#10B981}.status-badge.non-compliant{background:rgba(239,68,68,0.15);color:#EF4444}
+.status-dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+.table-wrapper{max-height:600px;overflow-y:auto;border-radius:12px;border:1px solid rgba(255,255,255,0.05)}
+.table-wrapper::-webkit-scrollbar{width:6px}.table-wrapper::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.1);border-radius:3px}
+.table-footer{display:flex;justify-content:space-between;align-items:center;margin-top:16px;color:rgba(255,255,255,0.5);font-size:13px}
+.export-btn{padding:10px 20px;background:#10B981;border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:500;cursor:pointer}.export-btn:hover{background:#0d9668}
+.demo-badge{position:fixed;top:80px;right:20px;background:linear-gradient(135deg,#8B5CF6,#6366F1);padding:8px 16px;border-radius:20px;font-size:12px;font-weight:600;z-index:1000}
+@media(max-width:1200px){.main-grid{grid-template-columns:1fr}.charts-row{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="demo-badge">📊 Demo Data</div>
+<div class="nav-tabs">
+<div class="nav-tab active" onclick="showTab('overview')">Overview</div>
+<div class="nav-tab" onclick="showTab('details')">Computer Details</div>
+</div>
+<div id="overview" class="tab-content active">
+<div class="dashboard">
+<div class="header-row">
+<div><h1>macOS Fleet Compliance</h1><div class="header-meta">Weekly Report • Wednesday, November 26, 2025</div></div>
+<div class="pct-badge up" id="pctBadge">↑ 7.7% improvement</div>
+</div>
+<div id="prevBanner" class="prev-banner">
+<span class="icon">📊</span>
+<span class="text">Comparing with previous report from <span class="date" id="prevDate">Nov 19, 2025, 9:00 AM</span></span>
+</div>
+<div class="main-grid">
+<div class="left-column">
+<div class="card gauge-card">
+<div class="card-title">Compliance Rate</div>
+<div class="radial-gauge">
+<svg class="gauge-svg" viewBox="0 0 320 180">
+<path d="M 30 160 A 130 130 0 0 1 290 160" stroke="rgba(255,255,255,0.1)" stroke-width="20" fill="none" stroke-linecap="round"/>
+<path d="M 30 160 A 130 130 0 0 1 68 72" stroke="#EF4444" stroke-width="20" fill="none" stroke-linecap="round"/>
+<path d="M 68 72 A 130 130 0 0 1 134 25" stroke="#F97316" stroke-width="20" fill="none"/>
+<path d="M 134 25 A 130 130 0 0 1 186 25" stroke="#EAB308" stroke-width="20" fill="none"/>
+<path d="M 186 25 A 130 130 0 0 1 252 72" stroke="#84CC16" stroke-width="20" fill="none"/>
+<path d="M 252 72 A 130 130 0 0 1 290 160" stroke="#10B981" stroke-width="20" fill="none" stroke-linecap="round"/>
+<line id="gaugeNeedle" x1="160" y1="160" x2="160" y2="45" stroke="white" stroke-width="4" stroke-linecap="round" transform="rotate(24, 160, 160)"/>
+<circle cx="160" cy="160" r="10" fill="white"/>
+</svg>
+<div class="radial-icon pos1"><div class="icon-circle red">✗</div><div class="icon-label">Critical</div></div>
+<div class="radial-icon pos2"><div class="icon-circle orange">⚠</div><div class="icon-label">Poor</div></div>
+<div class="radial-icon pos3"><div class="icon-circle yellow">◐</div><div class="icon-label">Fair</div></div>
+<div class="radial-icon pos4"><div class="icon-circle lime">◑</div><div class="icon-label">Good</div></div>
+<div class="radial-icon pos5"><div class="icon-circle green">✓</div><div class="icon-label">Excellent</div></div>
+<div class="gauge-center-text">
+<div class="gauge-percent good" id="gaugePercent">68.9%</div>
+<div class="gauge-sublabel">Compliant</div>
+</div>
+</div>
+<div class="stats-row">
+<div class="stat-box green"><div class="value" id="cCount">275</div><div class="label">Compliant</div><div class="comparison" id="cComp"><span class="prev-val">was 265</span><span class="delta up">+10</span></div></div>
+<div class="stat-box red"><div class="value" id="nCount">124</div><div class="label">Non-Compliant</div><div class="comparison" id="nComp"><span class="prev-val">was 182</span><span class="delta up">-58</span></div></div>
+<div class="stat-box blue"><div class="value" id="tCount">399</div><div class="label">Total</div><div class="comparison" id="tComp"><span class="prev-val">was 447</span><span class="delta neutral">-48</span></div></div>
+</div>
+</div>
+<div class="card">
+<div class="card-title">Compliance Requirements</div>
+<div class="req-item"><div class="req-icon">✓</div><div class="req-text">macOS 15.7.2 or higher<span>Sequoia security update</span></div></div>
+<div class="req-item"><div class="req-icon">✓</div><div class="req-text">macOS 26.0 or higher<span>Latest major version</span></div></div>
+</div>
+</div>
+<div class="right-column">
+<div class="charts-row">
+<div class="card"><div class="card-title">OS Distribution</div><div class="chart-container"><canvas id="distChart"></canvas></div></div>
+<div class="card"><div class="card-title">Major Versions</div><div class="chart-container"><canvas id="majorChart"></canvas></div></div>
+</div>
+<div class="charts-row">
+<div class="card"><div class="card-title">Compliant Versions</div><div class="version-list" id="cList"></div></div>
+<div class="card"><div class="card-title">Non-Compliant Versions</div><div class="version-list" id="nList"></div></div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div id="details" class="tab-content">
+<div class="dashboard">
+<div class="header"><div><h1>Computer Details</h1><div class="header-meta">All managed devices</div></div></div>
+<div class="card">
+<div class="table-controls">
+<div class="search-box"><input type="text" id="searchInput" placeholder="Search by name, serial, user, or version..."></div>
+<button class="filter-btn active" onclick="filterTable('all',this)">All</button>
+<button class="filter-btn" onclick="filterTable('compliant',this)">✓ Compliant</button>
+<button class="filter-btn red" onclick="filterTable('non-compliant',this)">✗ Non-Compliant</button>
+</div>
+<div class="table-wrapper"><table class="data-table"><thead><tr>
+<th onclick="sortTable(0)">Computer Name ↕</th><th onclick="sortTable(1)">Serial ↕</th><th onclick="sortTable(2)">OS Version ↕</th><th onclick="sortTable(3)">Build ↕</th><th onclick="sortTable(4)">Last Check-In ↕</th><th onclick="sortTable(5)">User ↕</th><th onclick="sortTable(6)">Status ↕</th>
+</tr></thead><tbody id="tableBody"></tbody></table></div>
+<div class="table-footer"><span id="tableCount">Showing 0 computers</span><button class="export-btn" onclick="exportCSV()">Export CSV</button></div>
+</div>
+</div>
+</div>
+<script>
+// Demo sample data
+const osData=[
+{"version":"15.7.2","count":148},{"version":"26.1.0","count":108},{"version":"14.7.6","count":23},
+{"version":"15.5.0","count":20},{"version":"15.6.1","count":19},{"version":"14.7.5","count":10},
+{"version":"14.6.1","count":8},{"version":"26.1","count":7},{"version":"15.6.0","count":7},
+{"version":"26.0.0","count":6},{"version":"14.7.0","count":6},{"version":"15.7.1","count":5},
+{"version":"12.7.6","count":5},{"version":"13.6.9","count":4},{"version":"26.0.1","count":3},
+{"version":"13.7.1","count":3},{"version":"12.7.5","count":3},{"version":"11.7.10","count":2}
+];
+
+const computerData=[
+{"id":"1","name":"MacBook-Pro-Design-01","serial":"C02X1234ABCD","version":"26.1.0","build":"25A100","lastCheckin":"2025-11-26T14:30:00","user":"sarah.johnson"},
+{"id":"2","name":"MacBook-Air-Sales-02","serial":"C02Y5678EFGH","version":"15.7.2","build":"24H71","lastCheckin":"2025-11-26T13:45:00","user":"mike.chen"},
+{"id":"3","name":"iMac-Marketing-01","serial":"C02Z9012IJKL","version":"14.7.6","build":"23H222","lastCheckin":"2025-11-25T09:00:00","user":"emma.wilson"},
+{"id":"4","name":"MacBook-Pro-Dev-03","serial":"C02W3456MNOP","version":"26.0.0","build":"25A1","lastCheckin":"2025-11-26T15:00:00","user":"alex.kumar"},
+{"id":"5","name":"Mac-Mini-Server-01","serial":"C02V7890QRST","version":"12.7.6","build":"21H1320","lastCheckin":"2025-11-24T08:30:00","user":"admin"},
+{"id":"6","name":"MacBook-Air-HR-01","serial":"C02U1234UVWX","version":"15.6.1","build":"24G100","lastCheckin":"2025-11-26T11:20:00","user":"lisa.park"},
+{"id":"7","name":"MacBook-Pro-Finance-02","serial":"C02T5678YZAB","version":"15.7.2","build":"24H71","lastCheckin":"2025-11-26T14:55:00","user":"john.doe"},
+{"id":"8","name":"iMac-Reception-01","serial":"C02S9012CDEF","version":"13.6.9","build":"22G830","lastCheckin":"2025-11-23T16:00:00","user":"front.desk"}
+];
+
+let currentFilter='all',sortCol=0,sortAsc=true;
+
+function parseV(v){const p=v.split('.').map(x=>parseInt(x)||0);return{major:p[0]||0,minor:p[1]||0,patch:p[2]||0};}
+function isComp(v){const ver=parseV(v);if(ver.major>=26)return true;if(ver.major===15&&(ver.minor>7||(ver.minor===7&&ver.patch>=2)))return true;return false;}
+function showTab(id){document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.nav-tab').forEach(t=>t.classList.remove('active'));document.getElementById(id).classList.add('active');event.target.classList.add('active');}
+
+function init(){
+const total=osData.reduce((s,d)=>s+d.count,0);
+let cc=0,nc=0;const cv=[],nv=[];
+osData.forEach(d=>{if(isComp(d.version)){cc+=d.count;cv.push(d);}else{nc+=d.count;nv.push(d);}});
+
+new Chart(document.getElementById('distChart'),{type:'doughnut',data:{labels:['Compliant','Non-Compliant'],datasets:[{data:[cc,nc],backgroundColor:['#10B981','#EF4444'],borderWidth:0,cutout:'70%'}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{color:'rgba(255,255,255,0.6)',padding:20}}}}});
+
+const mg={};osData.forEach(d=>{const m=parseV(d.version).major;mg['macOS '+m]=(mg['macOS '+m]||0)+d.count;});
+const sm=Object.entries(mg).sort((a,b)=>parseInt(b[0].replace('macOS ',''))-parseInt(a[0].replace('macOS ','')));
+const colors=sm.map(v=>{const m=parseInt(v[0].replace('macOS ',''));return m>=26?'#10B981':m===15?'#3B82F6':'#EF4444';});
+new Chart(document.getElementById('majorChart'),{type:'bar',data:{labels:sm.map(v=>v[0]),datasets:[{data:sm.map(v=>v[1]),backgroundColor:colors,borderRadius:8,barThickness:28}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{color:'rgba(255,255,255,0.05)'},ticks:{color:'rgba(255,255,255,0.4)'}},y:{grid:{display:false},ticks:{color:'rgba(255,255,255,0.7)'}}}}});
+
+function renderList(vers,id,isC){
+const el=document.getElementById(id);
+el.innerHTML=vers.sort((a,b)=>b.count-a.count).map(v=>{const p=((v.count/total)*100).toFixed(1);return'<div class="version-item"><div class="version-info"><div class="version-name">macOS '+v.version+'</div><div class="version-count">'+v.count+' device'+(v.count>1?'s':'')+'</div></div><div class="version-bar-wrapper"><div class="version-bar"><div class="version-bar-fill '+(isC?'green':'red')+'" style="width:'+Math.min(p*2,100)+'%"></div></div><span class="version-pct">'+p+'%</span></div></div>';}).join('');
+}
+renderList(cv,'cList',true);renderList(nv,'nList',false);renderTable();
+}
+
+function renderTable(){
+const tbody=document.getElementById('tableBody');const st=document.getElementById('searchInput').value.toLowerCase();
+let filtered=computerData.filter(c=>{const ms=!st||c.name.toLowerCase().includes(st)||c.serial.toLowerCase().includes(st)||c.version.toLowerCase().includes(st)||(c.user&&c.user.toLowerCase().includes(st));const comp=isComp(c.version);const mf=currentFilter==='all'||(currentFilter==='compliant'&&comp)||(currentFilter==='non-compliant'&&!comp);return ms&&mf;});
+filtered.sort((a,b)=>{let av,bv;switch(sortCol){case 0:av=a.name;bv=b.name;break;case 1:av=a.serial;bv=b.serial;break;case 2:av=a.version;bv=b.version;break;case 3:av=a.build;bv=b.build;break;case 4:av=a.lastCheckin;bv=b.lastCheckin;break;case 5:av=a.user||'';bv=b.user||'';break;case 6:av=isComp(a.version)?1:0;bv=isComp(b.version)?1:0;break;}if(av<bv)return sortAsc?-1:1;if(av>bv)return sortAsc?1:-1;return 0;});
+tbody.innerHTML=filtered.map(c=>{const comp=isComp(c.version);const cd=c.lastCheckin?new Date(c.lastCheckin).toLocaleDateString('en-US',{year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):'—';return'<tr><td>'+c.name+'</td><td style="font-family:monospace;font-size:12px">'+c.serial+'</td><td>macOS '+c.version+'</td><td style="color:rgba(255,255,255,0.5)">'+(c.build||'—')+'</td><td style="color:rgba(255,255,255,0.5)">'+cd+'</td><td>'+(c.user||'—')+'</td><td><span class="status-badge '+(comp?'compliant':'non-compliant')+'"><span class="status-dot"></span>'+(comp?'Compliant':'Non-Compliant')+'</span></td></tr>';}).join('');
+document.getElementById('tableCount').textContent='Showing '+filtered.length+' of '+computerData.length+' computers';
+}
+
+function filterTable(f,btn){currentFilter=f;document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('active'));btn.classList.add('active');renderTable();}
+function sortTable(col){if(sortCol===col)sortAsc=!sortAsc;else{sortCol=col;sortAsc=true;}renderTable();}
+function exportCSV(){alert('Export disabled in demo mode');}
+document.getElementById('searchInput').addEventListener('input',renderTable);
+init();
+</script>
+</body>
+</html>
