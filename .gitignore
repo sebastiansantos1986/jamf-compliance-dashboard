@@ -1,0 +1,6 @@
+.DS_Store
+*.log
+jamf_os_report_*.csv
+jamf_os_dashboard_*.html
+.coverage
+__pycache__/

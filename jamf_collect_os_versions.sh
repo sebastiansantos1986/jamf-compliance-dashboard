@@ -1,91 +1,159 @@
-#!/bin/bash
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+umask 077
 
 ##
 # Script Name: jamf_collect_os_versions.sh
 # Description: Collects OS version information for all computers in JAMF Pro
 #              and generates an HTML compliance dashboard with computer details
-# Date: 2025-11-26
-# Version: 5.0
+# Date: 2026-06-23
+# Version: 6.0
 ##
 
 # --- Configuration ---
-JAMF_URL=""
-JAMF_CLIENT_ID=""
-JAMF_CLIENT_SECRET=""
+JAMF_URL="${JAMF_URL:-}"
+JAMF_CLIENT_ID="${JAMF_CLIENT_ID:-}"
+JAMF_CLIENT_SECRET="${JAMF_CLIENT_SECRET:-}"
 
-DEBUG_MODE="false"
-AUTO_OPEN_BROWSER="true"
+AUTO_OPEN_BROWSER="${AUTO_OPEN_BROWSER:-true}"
+PAGE_SIZE="${PAGE_SIZE:-100}"
+CURL_TIMEOUT="${CURL_TIMEOUT:-60}"
 
-OUTPUT_DIR="/Users/sebastian.santos/Downloads/Reports"
+OUTPUT_DIR="${OUTPUT_DIR:-${HOME}/Downloads/Reports}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 OUTPUT_FILE="${OUTPUT_DIR}/jamf_os_report_${TIMESTAMP}.csv"
 HTML_FILE="${OUTPUT_DIR}/jamf_os_dashboard_${TIMESTAMP}.html"
+BEARER_TOKEN=""
+TEMP_RESPONSE=""
+TEMP_OUTPUT=""
+
+# ShellCheck cannot infer that this function is invoked by the EXIT/INT/TERM trap.
+# shellcheck disable=SC2317
+cleanup() {
+    [[ -n "$TEMP_RESPONSE" ]] && rm -f "$TEMP_RESPONSE"
+    [[ -n "$TEMP_OUTPUT" ]] && rm -f "$TEMP_OUTPUT"
+    if [[ -n "$BEARER_TOKEN" && -n "$JAMF_URL" ]]; then
+        curl --silent --max-time 10 -X POST "${JAMF_URL}/api/v1/auth/invalidate-token" \
+            -H "Authorization: Bearer ${BEARER_TOKEN}" >/dev/null 2>&1 || true
+    fi
+}
+trap cleanup EXIT INT TERM
+
+api_curl() {
+    curl --silent --show-error --fail-with-body --retry 3 --retry-all-errors \
+        --connect-timeout 10 --max-time "$CURL_TIMEOUT" "$@"
+}
 
 prompt_credentials() {
-    [[ -z "$JAMF_URL" ]] && read -rp "Enter JAMF Pro URL: " JAMF_URL
+    if [[ -z "$JAMF_URL" ]]; then
+        read -rp "Enter JAMF Pro URL: " JAMF_URL
+    fi
     JAMF_URL="${JAMF_URL%/}"
-    [[ -z "$JAMF_CLIENT_ID" ]] && read -rp "Enter API Client ID: " JAMF_CLIENT_ID
-    [[ -z "$JAMF_CLIENT_SECRET" ]] && read -rsp "Enter API Client Secret: " JAMF_CLIENT_SECRET && echo ""
+    if [[ -z "$JAMF_CLIENT_ID" ]]; then
+        read -rp "Enter API Client ID: " JAMF_CLIENT_ID
+    fi
+    if [[ -z "$JAMF_CLIENT_SECRET" ]]; then
+        read -rsp "Enter API Client Secret: " JAMF_CLIENT_SECRET
+        echo ""
+    fi
 }
 
 get_bearer_token() {
     echo "Authenticating with JAMF Pro API..."
-    TOKEN_RESPONSE=$(curl -s -X POST "${JAMF_URL}/api/oauth/token" \
+    local token_response
+    token_response=$(JAMF_CLIENT_ID="$JAMF_CLIENT_ID" JAMF_CLIENT_SECRET="$JAMF_CLIENT_SECRET" python3 - <<'PYTOKEN' | \
+        api_curl -X POST "${JAMF_URL}/api/oauth/token" \
         -H "Content-Type: application/x-www-form-urlencoded" \
-        -d "grant_type=client_credentials&client_id=${JAMF_CLIENT_ID}&client_secret=${JAMF_CLIENT_SECRET}")
-    BEARER_TOKEN=$(echo "$TOKEN_RESPONSE" | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
-    [[ -z "$BEARER_TOKEN" ]] && echo "Error: Authentication failed." && exit 1
+        --data-binary @-
+import os
+from urllib.parse import urlencode
+print(urlencode({
+    "grant_type": "client_credentials",
+    "client_id": os.environ["JAMF_CLIENT_ID"],
+    "client_secret": os.environ["JAMF_CLIENT_SECRET"],
+}))
+PYTOKEN
+    )
+    BEARER_TOKEN=$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token", ""))' <<<"$token_response")
+    [[ -z "$BEARER_TOKEN" ]] && { echo "Error: Authentication response did not contain an access token." >&2; exit 1; }
+    unset JAMF_CLIENT_SECRET
     echo "Authentication successful."
 }
 
 get_total_computers() {
-    local RESPONSE=$(curl -s -X GET "${JAMF_URL}/api/v1/computers-inventory?section=GENERAL&page=0&page-size=1" \
+    local response
+    response=$(api_curl -X GET "${JAMF_URL}/api/v1/computers-inventory?section=GENERAL&page=0&page-size=1" \
         -H "Authorization: Bearer ${BEARER_TOKEN}" -H "Accept: application/json")
-    echo "$RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin).get('totalCount', 0))" 2>/dev/null
+    python3 -c "import sys, json; print(json.load(sys.stdin).get('totalCount', 0))" <<<"$response"
 }
 
 collect_os_versions() {
-    local PAGE_SIZE=100 PAGE=0
-    local TOTAL_COMPUTERS=$(get_total_computers)
-    [[ "$TOTAL_COMPUTERS" == "0" ]] && echo "Error: No computers found." && exit 1
+    local page=0
+    local collected=0
+    local total_computers
+    total_computers=$(get_total_computers)
+    [[ "$total_computers" =~ ^[0-9]+$ ]] || { echo "Error: JAMF returned an invalid computer count." >&2; exit 1; }
+    [[ "$total_computers" == "0" ]] && { echo "Error: No computers found." >&2; exit 1; }
     
-    echo "Total computers in JAMF: $TOTAL_COMPUTERS"
+    echo "Total computers in JAMF: $total_computers"
     echo ""
-    echo "Computer ID,Computer Name,Serial Number,OS Version,OS Build,Last Check-In,Username" > "$OUTPUT_FILE"
+    TEMP_OUTPUT=$(mktemp "${OUTPUT_DIR}/.jamf_report.XXXXXX")
+    python3 - "$TEMP_OUTPUT" <<'PYHEADER'
+import csv, sys
+with open(sys.argv[1], "w", newline="", encoding="utf-8") as f:
+    csv.writer(f).writerow(["Computer ID", "Computer Name", "Serial Number", "OS Version", "OS Build", "Last Check-In", "Username"])
+PYHEADER
     echo "Collecting OS version data..."
     
-    local TEMP_RESPONSE="/tmp/jamf_response_$$.json"
+    TEMP_RESPONSE=$(mktemp "${TMPDIR:-/tmp}/jamf_response.XXXXXX")
     while true; do
-        echo "  Fetching page $((PAGE + 1))..."
-        curl -s -X GET "${JAMF_URL}/api/v1/computers-inventory?section=GENERAL&section=HARDWARE&section=OPERATING_SYSTEM&section=USER_AND_LOCATION&page=${PAGE}&page-size=${PAGE_SIZE}" \
+        echo "  Fetching page $((page + 1))..."
+        api_curl -X GET "${JAMF_URL}/api/v1/computers-inventory?section=GENERAL&section=HARDWARE&section=OPERATING_SYSTEM&section=USER_AND_LOCATION&page=${page}&page-size=${PAGE_SIZE}" \
             -H "Authorization: Bearer ${BEARER_TOKEN}" -H "Accept: application/json" > "$TEMP_RESPONSE"
         
-        python3 << PYPARSE >> "$OUTPUT_FILE"
-import json
-with open('$TEMP_RESPONSE', 'r') as f:
-    for c in json.load(f).get('results', []):
+        local result_count
+        result_count=$(python3 - "$TEMP_RESPONSE" "$TEMP_OUTPUT" <<'PYPARSE'
+import csv, json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    payload = json.load(f)
+results = payload.get("results")
+if not isinstance(results, list):
+    raise SystemExit("JAMF response did not contain a results list")
+with open(sys.argv[2], "a", newline="", encoding="utf-8") as out:
+    writer = csv.writer(out)
+    for c in results:
         g = c.get('general', {}) or {}
         h = c.get('hardware', {}) or {}
         o = c.get('operatingSystem', {}) or {}
         u = c.get('userAndLocation', {}) or {}
-        print(f"{c.get('id','')},{(g.get('name') or '').replace(',', ' ')},{h.get('serialNumber') or ''},{o.get('version') or ''},{o.get('build') or ''},{g.get('lastContactTime') or ''},{(u.get('username') or '').replace(',', ' ')}")
+        writer.writerow([c.get('id',''), g.get('name') or '', h.get('serialNumber') or '',
+                         o.get('version') or '', o.get('build') or '',
+                         g.get('lastContactTime') or '', u.get('username') or ''])
+print(len(results))
 PYPARSE
-        
-        RESULT_COUNT=$(python3 -c "import json; print(len(json.load(open('$TEMP_RESPONSE')).get('results', [])))" 2>/dev/null)
-        [[ -z "$RESULT_COUNT" || "$RESULT_COUNT" == "0" ]] && break
-        PAGE=$((PAGE + 1))
-        [[ $((PAGE * PAGE_SIZE)) -ge $TOTAL_COMPUTERS ]] && break
+        )
+        [[ "$result_count" == "0" ]] && break
+        collected=$((collected + result_count))
+        page=$((page + 1))
+        [[ $((page * PAGE_SIZE)) -ge $total_computers ]] && break
         sleep 0.5
     done
-    rm -f "$TEMP_RESPONSE"
+    [[ "$collected" -eq "$total_computers" ]] || { echo "Error: collected $collected of $total_computers computers; refusing to publish a partial report." >&2; exit 1; }
+    mv "$TEMP_OUTPUT" "$OUTPUT_FILE"
+    TEMP_OUTPUT=""
 }
 
 generate_summary() {
     echo ""
     echo "=== OS Version Summary ==="
-    tail -n +2 "$OUTPUT_FILE" | cut -d',' -f4 | sort | uniq -c | sort -rn | head -15 | while read -r count version; do
-        printf "  %-20s : %s computers\n" "$version" "$count"
-    done
+    python3 - "$OUTPUT_FILE" <<'PYSUMMARY'
+import csv, collections, sys
+with open(sys.argv[1], newline='', encoding='utf-8') as f:
+    rows = list(csv.DictReader(f))
+for version, count in collections.Counter((r.get('OS Version') or 'Unknown') for r in rows).most_common(15):
+    print(f"  {version:<20} : {count} computers")
+PYSUMMARY
 }
 
 generate_html_dashboard() {
@@ -96,7 +164,7 @@ generate_html_dashboard() {
     export HTML_FILE_PATH="$HTML_FILE"
     export OUTPUT_DIR_PATH="$OUTPUT_DIR"
     
-    python3 /dev/stdin << 'PYPYTHON'
+    python3 - <<'PYPYTHON'
 import json, csv, os, glob
 from datetime import datetime
 
@@ -110,16 +178,19 @@ def get_prev():
     if not files: return None, None
     pf = files[-1]
     pd = {'compliant': 0, 'non_compliant': 0, 'total': 0}
-    with open(pf, 'r') as f:
+    with open(pf, 'r', newline='', encoding='utf-8') as f:
         reader = csv.reader(f)
         next(reader)
         for row in reader:
-            if len(row) >= 4 and row[3]:
+            if len(row) >= 4:
                 pd['total'] += 1
-                v = row[3].split('.')
-                major = int(v[0]) if v else 0
-                minor = int(v[1]) if len(v) > 1 else 0
-                patch = int(v[2]) if len(v) > 2 else 0
+                try:
+                    v = row[3].split('.')
+                    major = int(v[0]) if v and v[0] else 0
+                    minor = int(v[1]) if len(v) > 1 else 0
+                    patch = int(v[2]) if len(v) > 2 else 0
+                except ValueError:
+                    major = minor = patch = 0
                 if major >= 26 or (major == 15 and (minor > 7 or (minor == 7 and patch >= 2))):
                     pd['compliant'] += 1
                 else:
@@ -131,19 +202,24 @@ prev_report, prev_date = get_prev()
 
 version_counts = {}
 computer_list = []
-with open(OUTPUT_FILE, 'r') as f:
+with open(OUTPUT_FILE, 'r', newline='', encoding='utf-8') as f:
     reader = csv.reader(f)
     next(reader)
     for row in reader:
-        if len(row) >= 4 and row[3]:
-            version_counts[row[3]] = version_counts.get(row[3], 0) + 1
+        if len(row) >= 4:
+            display_version = row[3] or 'Unknown'
+            version_counts[display_version] = version_counts.get(display_version, 0) + 1
             computer_list.append({'id': row[0], 'name': row[1], 'serial': row[2], 'version': row[3], 
                                   'build': row[4] if len(row) > 4 else '', 
                                   'lastCheckin': row[5] if len(row) > 5 else '', 
                                   'user': row[6] if len(row) > 6 else ''})
 
-os_data_json = json.dumps([{"version": v, "count": c} for v, c in version_counts.items()])
-computer_data_json = json.dumps(computer_list)
+def safe_json(value):
+    # Prevent user-controlled JAMF fields from terminating the script element.
+    return json.dumps(value, ensure_ascii=False).replace('<', '\\u003c').replace('>', '\\u003e').replace('&', '\\u0026')
+
+os_data_json = safe_json([{"version": v, "count": c} for v, c in version_counts.items()])
+computer_data_json = safe_json(computer_list)
 prev_report_json = json.dumps(prev_report) if prev_report else 'null'
 prev_date_str = prev_date if prev_date else ''
 report_date = datetime.now().strftime("%A, %B %d, %Y")
@@ -153,8 +229,8 @@ html = f'''<!DOCTYPE html>
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>macOS Compliance Dashboard</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'unsafe-inline'; img-src data:; font-src data:">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js"></script>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 body{{font-family:'Inter',-apple-system,sans-serif;background:#0f0f1a;min-height:100vh;color:#fff}}
@@ -258,8 +334,8 @@ body{{font-family:'Inter',-apple-system,sans-serif;background:#0f0f1a;min-height
 </head>
 <body>
 <div class="nav-tabs">
-<div class="nav-tab active" onclick="showTab('overview')">Overview</div>
-<div class="nav-tab" onclick="showTab('details')">Computer Details</div>
+<div class="nav-tab active" onclick="showTab('overview',this)">Overview</div>
+<div class="nav-tab" onclick="showTab('details',this)">Computer Details</div>
 </div>
 <div id="overview" class="tab-content active">
 <div class="dashboard">
@@ -363,7 +439,8 @@ let currentFilter='all',sortCol=0,sortAsc=true;
 
 function parseV(v){{const p=v.split('.').map(x=>parseInt(x)||0);return{{major:p[0]||0,minor:p[1]||0,patch:p[2]||0}};}}
 function isComp(v){{const ver=parseV(v);if(ver.major>=26)return true;if(ver.major===15&&(ver.minor>7||(ver.minor===7&&ver.patch>=2)))return true;return false;}}
-function showTab(id){{document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.nav-tab').forEach(t=>t.classList.remove('active'));document.getElementById(id).classList.add('active');event.target.classList.add('active');}}
+function esc(value){{return String(value??'').replace(/[&<>"']/g,ch=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[ch]));}}
+function showTab(id,tab){{document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.nav-tab').forEach(t=>t.classList.remove('active'));document.getElementById(id).classList.add('active');tab.classList.add('active');}}
 
 function formatPrevDate(ds){{
 if(!ds)return'';
@@ -426,7 +503,7 @@ new Chart(document.getElementById('majorChart'),{{type:'bar',data:{{labels:sm.ma
 
 function renderList(vers,id,isC){{
 const el=document.getElementById(id);
-el.innerHTML=vers.sort((a,b)=>b.count-a.count).map(v=>{{const p=((v.count/total)*100).toFixed(1);return'<div class="version-item"><div class="version-info"><div class="version-name">macOS '+v.version+'</div><div class="version-count">'+v.count+' device'+(v.count>1?'s':'')+'</div></div><div class="version-bar-wrapper"><div class="version-bar"><div class="version-bar-fill '+(isC?'green':'red')+'" style="width:'+Math.min(p*2,100)+'%"></div></div><span class="version-pct">'+p+'%</span></div></div>';}}).join('');
+el.innerHTML=vers.sort((a,b)=>b.count-a.count).map(v=>{{const p=((v.count/total)*100).toFixed(1);return'<div class="version-item"><div class="version-info"><div class="version-name">macOS '+esc(v.version)+'</div><div class="version-count">'+v.count+' device'+(v.count>1?'s':'')+'</div></div><div class="version-bar-wrapper"><div class="version-bar"><div class="version-bar-fill '+(isC?'green':'red')+'" style="width:'+Math.min(p*2,100)+'%"></div></div><span class="version-pct">'+p+'%</span></div></div>';}}).join('');
 }}
 renderList(cv,'cList',true);renderList(nv,'nList',false);renderTable();
 }}
@@ -435,26 +512,23 @@ function renderTable(){{
 const tbody=document.getElementById('tableBody');const st=document.getElementById('searchInput').value.toLowerCase();
 let filtered=computerData.filter(c=>{{const ms=!st||c.name.toLowerCase().includes(st)||c.serial.toLowerCase().includes(st)||c.version.toLowerCase().includes(st)||(c.user&&c.user.toLowerCase().includes(st));const comp=isComp(c.version);const mf=currentFilter==='all'||(currentFilter==='compliant'&&comp)||(currentFilter==='non-compliant'&&!comp);return ms&&mf;}});
 filtered.sort((a,b)=>{{let av,bv;switch(sortCol){{case 0:av=a.name;bv=b.name;break;case 1:av=a.serial;bv=b.serial;break;case 2:av=a.version;bv=b.version;break;case 3:av=a.build;bv=b.build;break;case 4:av=a.lastCheckin;bv=b.lastCheckin;break;case 5:av=a.user||'';bv=b.user||'';break;case 6:av=isComp(a.version)?1:0;bv=isComp(b.version)?1:0;break;}}if(av<bv)return sortAsc?-1:1;if(av>bv)return sortAsc?1:-1;return 0;}});
-tbody.innerHTML=filtered.map(c=>{{const comp=isComp(c.version);const cd=c.lastCheckin?new Date(c.lastCheckin).toLocaleDateString('en-US',{{year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}}):'—';return'<tr><td>'+c.name+'</td><td style="font-family:monospace;font-size:12px">'+c.serial+'</td><td>macOS '+c.version+'</td><td style="color:rgba(255,255,255,0.5)">'+(c.build||'—')+'</td><td style="color:rgba(255,255,255,0.5)">'+cd+'</td><td>'+(c.user||'—')+'</td><td><span class="status-badge '+(comp?'compliant':'non-compliant')+'"><span class="status-dot"></span>'+(comp?'Compliant':'Non-Compliant')+'</span></td></tr>';}}).join('');
+tbody.innerHTML=filtered.map(c=>{{const comp=isComp(c.version);const cd=c.lastCheckin?new Date(c.lastCheckin).toLocaleDateString('en-US',{{year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}}):'—';return'<tr><td>'+esc(c.name)+'</td><td style="font-family:monospace;font-size:12px">'+esc(c.serial)+'</td><td>'+(c.version?'macOS '+esc(c.version):'Unknown')+'</td><td style="color:rgba(255,255,255,0.5)">'+esc(c.build||'—')+'</td><td style="color:rgba(255,255,255,0.5)">'+esc(cd)+'</td><td>'+esc(c.user||'—')+'</td><td><span class="status-badge '+(comp?'compliant':'non-compliant')+'"><span class="status-dot"></span>'+(comp?'Compliant':'Non-Compliant')+'</span></td></tr>';}}).join('');
 document.getElementById('tableCount').textContent='Showing '+filtered.length+' of '+computerData.length+' computers';
 }}
 
 function filterTable(f,btn){{currentFilter=f;document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('active'));btn.classList.add('active');renderTable();}}
 function sortTable(col){{if(sortCol===col)sortAsc=!sortAsc;else{{sortCol=col;sortAsc=true;}}renderTable();}}
-function exportCSV(){{let csv='Computer Name,Serial,OS Version,Build,Last Check-In,User,Status\\n';computerData.forEach(c=>{{csv+='"'+c.name+'","'+c.serial+'","'+c.version+'","'+(c.build||'')+'","'+(c.lastCheckin||'')+'","'+(c.user||'')+'","'+(isComp(c.version)?'Compliant':'Non-Compliant')+'"\\n';}});const blob=new Blob([csv],{{type:'text/csv'}});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='compliance_report.csv';a.click();}}
+function csvCell(value){{let s=String(value??'');if(/^[=+\-@]/.test(s))s="'"+s;return'"'+s.replace(/"/g,'""')+'"';}}
+function exportCSV(){{const rows=[['Computer Name','Serial','OS Version','Build','Last Check-In','User','Status']];computerData.forEach(c=>rows.push([c.name,c.serial,c.version||'Unknown',c.build||'',c.lastCheckin||'',c.user||'',isComp(c.version)?'Compliant':'Non-Compliant']));const csv=rows.map(r=>r.map(csvCell).join(',')).join('\\n')+'\\n';const blob=new Blob([csv],{{type:'text/csv;charset=utf-8'}});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='compliance_report.csv';a.click();URL.revokeObjectURL(url);}}
 document.getElementById('searchInput').addEventListener('input',renderTable);
 init();
 </script>
 </body></html>'''
 
-with open(HTML_FILE, 'w') as f:
+with open(HTML_FILE, 'w', encoding='utf-8') as f:
     f.write(html)
 print("HTML dashboard generated successfully.")
 PYPYTHON
-}
-
-invalidate_token() {
-    curl -s -X POST "${JAMF_URL}/api/v1/auth/invalidate-token" -H "Authorization: Bearer ${BEARER_TOKEN}" > /dev/null 2>&1
 }
 
 echo "=========================================="
@@ -466,14 +540,15 @@ command -v curl &>/dev/null || { echo "Error: curl required."; exit 1; }
 command -v python3 &>/dev/null || { echo "Error: python3 required."; exit 1; }
 
 prompt_credentials
-[[ ! -d "$OUTPUT_DIR" ]] && mkdir -p "$OUTPUT_DIR"
+[[ "$PAGE_SIZE" =~ ^[1-9][0-9]*$ ]] || { echo "Error: PAGE_SIZE must be a positive integer." >&2; exit 1; }
+[[ "$CURL_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || { echo "Error: CURL_TIMEOUT must be a positive integer." >&2; exit 1; }
+mkdir -p "$OUTPUT_DIR"
+chmod 700 "$OUTPUT_DIR" 2>/dev/null || true
 
 get_bearer_token
 collect_os_versions
 generate_summary
 generate_html_dashboard
-invalidate_token
-
 echo ""
 echo "=========================================="
 echo "  Collection Complete"
@@ -481,8 +556,8 @@ echo "=========================================="
 echo ""
 echo "CSV Report:      $OUTPUT_FILE"
 echo "HTML Dashboard:  $HTML_FILE"
-echo "Total records:   $(($(wc -l < "$OUTPUT_FILE") - 1))"
+echo "Total records:   $(python3 -c 'import csv,sys; f=open(sys.argv[1], newline="", encoding="utf-8"); print(sum(1 for _ in csv.reader(f))-1)' "$OUTPUT_FILE")"
 echo ""
 
-[[ "$AUTO_OPEN_BROWSER" == "true" ]] && open "$HTML_FILE"
+[[ "$AUTO_OPEN_BROWSER" == "true" ]] && command -v open >/dev/null && open "$HTML_FILE"
 exit 0
