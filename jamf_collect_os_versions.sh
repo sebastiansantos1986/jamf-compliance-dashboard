@@ -28,6 +28,8 @@ BEARER_TOKEN=""
 TEMP_RESPONSE=""
 TEMP_OUTPUT=""
 
+# ShellCheck cannot infer that this function is invoked by the EXIT/INT/TERM trap.
+# shellcheck disable=SC2317
 cleanup() {
     [[ -n "$TEMP_RESPONSE" ]] && rm -f "$TEMP_RESPONSE"
     [[ -n "$TEMP_OUTPUT" ]] && rm -f "$TEMP_OUTPUT"
